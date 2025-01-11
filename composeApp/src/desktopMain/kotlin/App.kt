@@ -1,69 +1,95 @@
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.border
+import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material.MaterialTheme
 import androidx.compose.material.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draganddrop.DragAndDropEvent
+import androidx.compose.ui.draganddrop.DragAndDropTarget
+import androidx.compose.ui.draganddrop.awtTransferable
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.FrameWindowScope
 import org.jetbrains.compose.ui.tooling.preview.Preview
-
 import java.awt.datatransfer.DataFlavor
-import java.awt.dnd.DnDConstants
-import java.awt.dnd.DropTarget
-import java.awt.dnd.DropTargetDropEvent
 import java.io.File
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
+@OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
 @Preview
 fun FrameWindowScope.App() {
     MaterialTheme {
-        var content by remember { mutableStateOf("Drop a file here") }
-        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(content)
-        }
 
-        val target = object : DropTarget() {
+        var content by remember { mutableStateOf("Drop a file here") }
+
+        val target = object : DragAndDropTarget {
             @Synchronized
-            override fun drop(evt: DropTargetDropEvent) {
+            override fun onDrop(evt: DragAndDropEvent): Boolean {
                 try {
-                    evt.acceptDrop(DnDConstants.ACTION_REFERENCE)
-                    val droppedFiles = evt
-                        .transferable.getTransferData(
-                            DataFlavor.javaFileListFlavor
-                        ) as List<*>
+                    val droppedFiles = evt.awtTransferable.getTransferData(DataFlavor.javaFileListFlavor) as List<*>
                     for (file in droppedFiles) {
-                        (file as File).inputStream().buffered().use {
+                        (file as File).inputStream().buffered().use { stream ->
                             val newContent = StringBuilder(file.path + "\n")
-                            newContent.appendLine(it.nextInt().toMagicWordDescription())
-                            newContent.appendLine(it.nextInt().toCpuTypeDescription())
-                            newContent.appendLine(it.nextInt().toCpuSubtypeDescription())
-                            newContent.appendLine(it.nextInt().toFileTypeDescription())
-                            newContent.append("Number of load commands: ").appendLine(it.nextInt())
-                            newContent.append("Size of load commands: ").append(it.nextInt()).appendLine(" bytes")
-                            newContent.appendLine(it.nextInt().toFlagsDescription())
-                            newContent.append("Reserved word: ").appendLine(it.nextInt())
+                            newContent.appendLine(stream.nextInt().toMagicWordDescription())
+                            newContent.appendLine(stream.nextInt().toCpuTypeDescription())
+                            newContent.appendLine(stream.nextInt().toCpuSubtypeDescription())
+                            newContent.appendLine(stream.nextInt().toFileTypeDescription())
+                            val loadCommandNumber = stream.nextInt()
+                            newContent.append("Number of load commands: $loadCommandNumber").appendLine()
+                            newContent.append("Size of load commands: ").append(stream.nextInt()).appendLine(" bytes")
+                            newContent.append(stream.nextInt().toFlagsDescription())
+                            newContent.append("Reserved word: ").appendLine(stream.nextInt())
+
+                            repeat(loadCommandNumber) {
+                                newContent.append("Load command: ").appendLine(stream.nextInt().toLoadCommandType())
+                                val commandSize = stream.nextInt()
+                                newContent.append("- command size: $commandSize bytes")
+                                newContent.append("- segment name: ").appendLine(stream.nextFixedString(16))
+
+
+                            }
+
                             content = newContent.toString()
                         }
                     }
+                    return true
                 } catch (ex: Exception) {
                     ex.printStackTrace()
+                    return false
                 }
             }
         }
-        this.window.contentPane.dropTarget = target
+
+        Column(
+            Modifier.fillMaxWidth()
+                .dragAndDropTarget(shouldStartDragAndDrop = { true }, target = target)
+                .border(BorderStroke(1.dp, Color(0xFF, 0, 0))),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(content)
+        }
+
     }
 }
+
+private fun InputStream.nextFixedString(numBytes: Int) =
+    readNBytes(numBytes).let { bytes -> String(bytes, 0, bytes.indexOfFirst { it == 0.toByte() }) }
 
 fun InputStream.nextInt() = ByteBuffer.wrap(readNBytes(4)).order(ByteOrder.LITTLE_ENDIAN).int
 
 fun Int.toMagicWordDescription() = when (this) {
-    0xFEEDFACE.toInt() -> "32 bit executable"
-    0xFEEDFACF.toInt() -> "64 bit executable"
-    else -> "Not an executable"
+    0xFEEDFACE.toInt() -> "32 bit Mach-O executable"
+    0xFEEDFACF.toInt() -> "64 bit Mach-O executable"
+    else -> "Not a Mach-O executable"
 }
 
 fun Int.toCpuTypeDescription() = "CPU Type: ${cpuTypes[this] ?: "Unknown ($this)"}"
@@ -72,7 +98,7 @@ fun Int.toCpuSubtypeDescription(): String {
     return "CPU Subtype: TODO" // TODO
 }
 
-fun Int.toFileTypeDescription() = ("File type: " + fileTypes[this]) ?: "Unknown ($this)"
+fun Int.toFileTypeDescription() = "File type: " + (fileTypes[this] ?: "Unknown ($this)")
 
 fun Int.toFlagsDescription(): String {
     val result = StringBuilder("Flags:\n")
@@ -159,3 +185,6 @@ val flags = arrayOf(
     "",
     "Only for use on dylibs. When this bit is set, the dylib is part of the dyld shared cache, rather than loose in the filesystem"
 )
+
+fun Int.toLoadCommandType() =
+    if (this == 0x00000001) "32-bit" else if (this == 0x00000019) "64-bit" else "Unknown ($this)"
